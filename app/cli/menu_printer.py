@@ -226,11 +226,17 @@ class MenuPrinter:
     def _manage_portfolios_menu(self, username: str) -> None:
         """Manage Portfolios submenu."""
         while True:
-            self.print_menu("Manage Portfolios", ["View Portfolios", "Create Portfolio", "Delete Portfolio", "Back to Main Menu"])
-            choice = self.prompt_choice(4, "Choose an option")
+            self.print_menu("Manage Portfolios", [
+                "View Portfolios",
+                "Create Portfolio",
+                "Delete Portfolio",
+                "Harvest Investment",
+                "Back to Main Menu"
+            ])
+            choice = self.prompt_choice(5, "Choose an option")
             if choice == 0:
                 continue
-            if choice == 4:
+            if choice == 5:
                 break  # back to main menu
             if choice == 1:
                 self._view_portfolios(username)
@@ -238,6 +244,37 @@ class MenuPrinter:
                 self._create_portfolio(username)
             elif choice == 3:
                 self._delete_portfolio(username)
+            elif choice == 4:
+                self._harvest_investment(username)
+    def _harvest_investment(self, username: str) -> None:
+        """Prompt for portfolio ID, ticker, and quantity, then harvest investment at market price via service."""
+        try:
+            portfolio_id = get_int("Portfolio ID to harvest from", min_value=1)
+            if portfolio_id is None or portfolio_id == 0:
+                return
+            ticker = get_string("Ticker to harvest (e.g., AAPL)")
+            if not ticker:
+                return
+            quantity = get_int("Number of shares to harvest (integer)", min_value=1)
+            if quantity is None or quantity <= 0:
+                return
+            security = self.security_service.get_security(ticker)
+            if not security:
+                self.console.print(f"[red]Could not find market price for ticker '{ticker}'.[/red]")
+                return
+            sale_price = security.price
+            self.console.print(f"[yellow]Using market price ${sale_price:.2f} for {ticker}.[/yellow]")
+            result = self.portfolio_service.harvest_investment(username, portfolio_id, ticker, quantity, sale_price)
+            if result:
+                self.console.print(f"[green]Harvested {quantity} shares of {ticker} from portfolio ID '{portfolio_id}' at ${sale_price:.2f}/share successfully.[/green]")
+            else:
+                self.console.print(f"[red]Failed to harvest investment from portfolio ID '{portfolio_id}'.[/red]")
+        except ValidationError as ve:
+            self.console.print(f"[red]Failed to harvest investment: {ve}[/red]")
+        except NotFoundError as ne:
+            self.console.print(f"[red]Error: {ne}[/red]")
+        except Exception as e:
+            self.console.print(f"[red]Unexpected error harvesting investment: {e}[/red]")
 
     def _view_portfolios(self, username: str) -> None:
         """Display all portfolios of the user in a table."""
@@ -336,13 +373,13 @@ class MenuPrinter:
             self.console.print(f"[red]Error viewing tickers: {e}[/red]")
 
     def _buy_security(self, username: str) -> None:
-        """Prompt for Ticker, amount, and portfolio ID, then buy the security."""
+        """Prompt for Ticker, integer quantity, and portfolio ID, then buy the security."""
         try:
             symbol = get_string("Ticker to buy")
             if symbol == "":
                 return
-            amount = get_float("Amount to invest", min_value=0.01)
-            if amount is None:
+            quantity = get_int("Number of shares to buy (integer)", min_value=1)
+            if quantity is None or quantity <= 0:
                 return
 
             # Prompt for portfolio ID
@@ -351,8 +388,8 @@ class MenuPrinter:
                 return
 
             # Execute buy via service
-            self.security_service.buy_security(username, symbol, amount, portfolio_id)
-            self.console.print(f"[green]Successfully bought ${amount:.2f} of {symbol} in portfolio {portfolio_id}.[/green]")
+            self.security_service.buy_security(username, symbol, quantity, portfolio_id)
+            self.console.print(f"[green]Successfully bought {quantity} shares of {symbol} in portfolio {portfolio_id}.[/green]")
         except PermissionError as pe:
             self.console.print(f"[red]Access denied: {pe}[/red]")
         except ValueError as ve:
@@ -362,13 +399,13 @@ class MenuPrinter:
             self.console.print(f"[yellow]Details: {e.args}[/yellow]")
 
     def _sell_security(self, username: str) -> None:
-        """Prompt for Ticker, amount, and portfolio ID, then sell the security."""
+        """Prompt for Ticker, integer quantity, and portfolio ID, then sell the security."""
         try:
             symbol = get_string("Ticker to sell")
             if symbol == "":
                 return
-            amount = get_float("Amount to sell", min_value=0.01)
-            if amount is None:
+            quantity = get_int("Number of shares to sell (integer)", min_value=1)
+            if quantity is None or quantity <= 0:
                 return
 
             # Prompt for portfolio ID
@@ -377,8 +414,8 @@ class MenuPrinter:
                 return
 
             # Execute sell via service
-            self.security_service.sell_security(username, symbol, amount, portfolio_id)
-            self.console.print(f"[green]Sell Successful ${amount:.2f} sold {symbol} from portfolio {portfolio_id}.[/green]")
+            self.security_service.sell_security(username, symbol, quantity, portfolio_id)
+            self.console.print(f"[green]Sell Successful: {quantity} shares of {symbol} sold from portfolio {portfolio_id}.[/green]")
         except PermissionError as pe:
             self.console.print(f"[red]Access denied: {pe}[/red]")
         except ValueError as ve:

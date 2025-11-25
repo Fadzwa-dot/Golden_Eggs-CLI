@@ -30,10 +30,10 @@ class SecurityService:
             raise NotFoundError(f"Ticker '{ticker}' not found")
         return sec
 
-    def buy_security(self, username: str, ticker: str, amount: float, portfolio_id: int) -> None:
+    def buy_security(self, username: str, ticker: str, quantity: int, portfolio_id: int) -> None:
         """
         Allow a user to buy a security in a specific portfolio.
-        Supports fractional investing.
+        Only integer shares allowed.
         """
         if username not in self.db.users:
             raise NotFoundError(f"User '{username}' not found.")
@@ -51,21 +51,19 @@ class SecurityService:
         if security is None:
             raise NotFoundError(f"Security '{ticker}' not found in the marketplace.")
 
-        if amount > user.balance:
+        total_cost = quantity * security.price
+        if total_cost > user.balance:
             raise ValueError("Insufficient balance to buy security.")
-
-        # Calculate fractional shares
-        quantity = amount / security.price
         if quantity <= 0:
-            raise ValueError("Investment amount is too low to buy any shares.")
+            raise ValueError("Quantity must be a positive integer.")
 
-        user.adjust_balance(-amount)
+        user.adjust_balance(-total_cost)
         portfolio.add_or_update_investment(ticker, quantity, security.price)
 
-    def sell_security(self, username: str, ticker: str, amount: float, portfolio_id: int) -> None:
+    def sell_security(self, username: str, ticker: str, quantity: int, portfolio_id: int) -> None:
         """
         Allow a user to sell a security from a specific portfolio.
-        Only users with the 'customer' role can perform this action.
+        Only integer shares allowed.
         """
         if username not in self.db.users:
             raise NotFoundError(f"User '{username}' not found.")
@@ -87,16 +85,14 @@ class SecurityService:
         if security is None:
             raise NotFoundError(f"Security '{ticker}' not found in the marketplace.")
 
-        total_value = investment.quantity * security.price
-        if amount > total_value:
-            raise ValueError("Amount exceeds the total value of the investment.")
+        if quantity > investment.quantity:
+            raise ValueError("Not enough shares to sell.")
+        if quantity <= 0:
+            raise ValueError("Quantity must be a positive integer.")
 
-        quantity_to_sell = amount // security.price
-        if quantity_to_sell == 0:
-            raise ValueError("Amount is too low to sell any shares.")
-
-        investment.quantity -= quantity_to_sell
+        investment.quantity -= quantity
         if investment.quantity == 0:
             portfolio.holdings.remove(investment)
 
-        user.adjust_balance(amount)
+        proceeds = quantity * security.price
+        user.adjust_balance(proceeds)
