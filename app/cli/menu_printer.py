@@ -5,6 +5,8 @@ from rich.table import Table
 
 from app.cli.input_collector import get_string, get_int, get_float
 from app.service.exceptions import ValidationError, NotFoundError
+from app.db import get_session
+from app.models.user import User
 
 class MenuPrinter:
     """
@@ -102,11 +104,11 @@ class MenuPrinter:
     def _main_menu(self, username: str) -> None:
         """Main menu loop with implemented menus."""
         while True:
-            self.print_menu("Main Menu", ["Manage Users", "Manage Portfolios", "Marketplace", "Logout"])
-            choice = self.prompt_choice(4, "Choose an option")
+            self.print_menu("Main Menu", ["Manage Users", "Manage Portfolios", "Marketplace", "View Transaction History", "Logout"])
+            choice = self.prompt_choice(5, "Choose an option")
             if choice == 0:
                 continue
-            if choice == 4:
+            if choice == 5:
                 try:
                     if self.login_service:
                         self.login_service.logout()
@@ -123,6 +125,8 @@ class MenuPrinter:
                 self._manage_portfolios_menu(username)
             elif choice == 3:
                 self._marketplace_menu(username)
+            elif choice == 4:
+                self._view_transaction_history()
 
     def _manage_users_menu(self) -> None:
         """Manage Users submenu for admin."""
@@ -201,13 +205,17 @@ class MenuPrinter:
                 return
             confirm = get_string(f"Confirm deletion of user '{username}'? (yes/no)")
             if confirm.strip().lower() == "yes":
-                success = self.user_service.delete_user(username)
-                if success:
+                try:
+                    self.user_service.delete_user(username)
                     self.console.print(f"[green]User {username} deleted successfully.[/green]")
-                else:
-                    self.console.print(f"[red]User {username} not found.[/red]")
+                except ValidationError as ve:
+                    self.console.print(f"[red]Failed to delete user: {ve}[/red]")
+                except NotFoundError as ne:
+                    self.console.print(f"[red]User not found: {ne}[/red]")
+                except Exception as e:
+                    self.console.print(f"[red]Unexpected error: {e}[/red]")
         except Exception as e:
-            self.console.print(f"[red]Error occurred while deleting the user. Please contact support.[/red]")
+            self.console.print(f"[red]Error occurred while deleting the user: {e}[/red]")
 
     def _deposit_money(self) -> None:
         """Prompt for username and amount, then deposit money to the user's account."""
@@ -251,15 +259,19 @@ class MenuPrinter:
             table.add_column("Portfolio Name", style="cyan")
             table.add_column("Assets (Amount Invested)", style="green")
             for portfolio in portfolios:
-                # Calculate amount invested for each asset using Security price
-                assets = ", ".join([
-                    f"{inv.ticker} (${inv.quantity * self.security_service.get_security(inv.ticker).price:.2f}, {inv.quantity:.4f} shares)"
-                    for inv in portfolio.holdings
-                ]) if portfolio.holdings else "No assets"
-                table.add_row(str(portfolio.id), str(portfolio.name), str(assets))
+                # Use only direct fields to avoid lazy loading errors
+                assets = []
+                investments = getattr(portfolio, "investments", [])
+                for inv in investments:
+                    ticker = getattr(inv, "security_ticker", "")
+                    quantity = getattr(inv, "quantity", 0)
+                    price = getattr(inv, "purchase_price", 0.0)
+                    assets.append(f"{ticker} (${quantity * price:.2f}, {quantity:.4f} shares)")
+                assets_str = ", ".join(assets) if assets else "No assets"
+                table.add_row(str(getattr(portfolio, "id", "")), str(getattr(portfolio, "name", "")), assets_str)
             self.console.print(table)
         except Exception as e:
-            self.console.print(f"[red]Error occurred while fetching portfolio details. Please try again later.[/red]")
+            self.console.print(f"[red]Error occurred while fetching portfolio details: {e}[/red]")
 
     def _create_portfolio(self, username: str) -> None:
         """Prompt for portfolio details and create a new portfolio."""
@@ -313,6 +325,86 @@ class MenuPrinter:
                 self._buy_security(username)
             elif choice == 3:
                 self._sell_security(username)
+    def _view_transaction_history(self) -> None:
+        """Display all transactions in a table."""
+        try:
+            # Get the logged-in username
+            logged_in_username = getattr(self, 'current_username', None)
+            if logged_in_username is None:
+                logged_in_username = get_string("Enter your username")
+            # Get logged-in user
+            with get_session() as session:
+                logged_in_user = session.query(User).filter_by(username=logged_in_username).first()
+                if logged_in_user and logged_in_user.role == "admin":
+                    # Admin: show all customers' transaction histories, no prompt
+                    customers = session.query(User).filter(User.role == "customer").all()
+                    if not customers:
+                        self.console.print("[yellow]No customers found.[/yellow]")
+                        return
+                    for customer in customers:
+                        transactions = self.security_service.get_transactions_by_user(customer.username)
+                        self.console.print(f"[bold cyan]Transaction history for {customer.username}:[/bold cyan]")
+                        if not transactions:
+                            self.console.print("[yellow]No transactions found.[/yellow]")
+                            continue
+                        table = Table(title=f"Transaction History: {customer.username}")
+                        table.add_column("ID", style="magenta")
+                        table.add_column("Username", style="cyan")
+                        table.add_column("Ticker", style="green")
+                        table.add_column("Type", style="yellow")
+                        table.add_column("Portfolio ID", style="cyan")
+                        table.add_column("Quantity", style="white")
+                        table.add_column("Price", style="white")
+                        table.add_column("Timestamp", style="white")
+                        for tx in transactions:
+                            table.add_row(
+                                str(getattr(tx, "id", "")),
+                                str(getattr(tx, "user_id", "")),
+                                str(getattr(tx, "security_id", "")),
+                                str(getattr(tx, "transaction_type", "")),
+                                str(getattr(tx, "portfolio_id", "")),
+                                str(getattr(tx, "quantity", "")),
+                                f"${float(getattr(tx, 'price', 0.0)):.2f}",
+                                str(getattr(tx, "timestamp", "")),
+                            )
+                        self.console.print(table)
+                    return
+                # For customers: prompt for their own username only
+                target_username = get_string("Enter your username to view your transaction history") or logged_in_username
+                target_user = session.query(User).filter_by(username=target_username).first()
+                if not logged_in_user or not target_user:
+                    self.console.print(f"[red]User not found.[/red]")
+                    return
+                if target_username != logged_in_username:
+                    self.console.print(f"[red]User not allowed to view this customer's transaction history.[/red]")
+                    return
+                transactions = self.security_service.get_transactions_by_user(logged_in_username)
+                if not transactions:
+                    self.console.print("[yellow]No transactions found.[/yellow]")
+                    return
+                table = Table(title="Transaction History")
+                table.add_column("ID", style="magenta")
+                table.add_column("Username", style="cyan")
+                table.add_column("Ticker", style="green")
+                table.add_column("Type", style="yellow")
+                table.add_column("Portfolio ID", style="cyan")
+                table.add_column("Quantity", style="white")
+                table.add_column("Price", style="white")
+                table.add_column("Timestamp", style="white")
+                for tx in transactions:
+                    table.add_row(
+                        str(getattr(tx, "id", "")),
+                        str(getattr(tx, "user_id", "")),
+                        str(getattr(tx, "security_id", "")),
+                        str(getattr(tx, "transaction_type", "")),
+                        str(getattr(tx, "portfolio_id", "")),
+                        str(getattr(tx, "quantity", "")),
+                        f"${float(getattr(tx, 'price', 0.0)):.2f}",
+                        str(getattr(tx, "timestamp", "")),
+                    )
+                self.console.print(table)
+        except Exception as e:
+            self.console.print(f"[red]Error occurred while fetching transaction history: {e}[/red]")
 
     def _view_securities(self) -> None:
         """Display all available securities in a table."""
@@ -336,13 +428,13 @@ class MenuPrinter:
             self.console.print(f"[red]Error viewing tickers: {e}[/red]")
 
     def _buy_security(self, username: str) -> None:
-        """Prompt for Ticker, amount, and portfolio ID, then buy the security."""
+        """Prompt for Ticker, quantity, and portfolio ID, then buy the security."""
         try:
             symbol = get_string("Ticker to buy")
             if symbol == "":
                 return
-            amount = get_float("Amount to invest", min_value=0.01)
-            if amount is None:
+            quantity = get_int("Quantity to buy", min_value=1)
+            if quantity is None:
                 return
 
             # Prompt for portfolio ID
@@ -351,8 +443,8 @@ class MenuPrinter:
                 return
 
             # Execute buy via service
-            self.security_service.buy_security(username, symbol, amount, portfolio_id)
-            self.console.print(f"[green]Successfully bought ${amount:.2f} of {symbol} in portfolio {portfolio_id}.[/green]")
+            self.security_service.buy_security(username, symbol, quantity, portfolio_id)
+            self.console.print(f"[green]Successfully bought {quantity} shares of {symbol} in portfolio {portfolio_id}.[/green]")
         except PermissionError as pe:
             self.console.print(f"[red]Access denied: {pe}[/red]")
         except ValueError as ve:
@@ -362,13 +454,13 @@ class MenuPrinter:
             self.console.print(f"[yellow]Details: {e.args}[/yellow]")
 
     def _sell_security(self, username: str) -> None:
-        """Prompt for Ticker, amount, and portfolio ID, then sell the security."""
+        """Prompt for Ticker, quantity, and portfolio ID, then sell the security."""
         try:
             symbol = get_string("Ticker to sell")
             if symbol == "":
                 return
-            amount = get_float("Amount to sell", min_value=0.01)
-            if amount is None:
+            quantity = get_int("Quantity to sell", min_value=1)
+            if quantity is None:
                 return
 
             # Prompt for portfolio ID
@@ -377,8 +469,8 @@ class MenuPrinter:
                 return
 
             # Execute sell via service
-            self.security_service.sell_security(username, symbol, amount, portfolio_id)
-            self.console.print(f"[green]Sell Successful ${amount:.2f} sold {symbol} from portfolio {portfolio_id}.[/green]")
+            self.security_service.sell_security(username, symbol, quantity, portfolio_id)
+            self.console.print(f"[green]Sell Successful: {quantity} shares of {symbol} sold from portfolio {portfolio_id}.[/green]")
         except PermissionError as pe:
             self.console.print(f"[red]Access denied: {pe}[/red]")
         except ValueError as ve:

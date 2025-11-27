@@ -1,10 +1,12 @@
-# app/service/portfolio_service.py
+4# app/service/portfolio_service.py
 from typing import Dict, List, Optional, Any
-import db
-
+from app.db import get_session
+from sqlalchemy.orm import selectinload
+from app.models.portfolio import Portfolio
+from app.models.user import User
+from app.models.investment import Investment
+from app.models.security import Security
 from app.service.exceptions import NotFoundError, ValidationError
-from app.domain.portfolio import Portfolio
-from app.domain.investment import Investment
 
 class PortfolioService:
     """
@@ -13,92 +15,99 @@ class PortfolioService:
     """
 
     def __init__(self) -> None:
-        self.db = db
+        pass
 
     def create_portfolio(self, username: str, name: str, description: str) -> Portfolio:
-        if username not in getattr(self.db, "users", {}):
-            raise NotFoundError(f"user '{username}' not found")
-        pid = getattr(self.db, "next_portfolio_id_get", lambda: 1)()
-        portfolio = Portfolio(id=pid, name=name, description=description, holdings=[])
-        self.db.portfolios.setdefault(username, []).append(portfolio)
-        return portfolio
+        with get_session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise NotFoundError(f"user '{username}' not found")
+            portfolio = Portfolio(name=name, description=description, owner_username=username)
+            session.add(portfolio)
+            session.commit()
+            # Ensure relationships are loaded before the session is closed so
+            # callers can inspect `portfolio.investments` without triggering
+            # a lazy-load on a closed session.
+            _ = portfolio.investments  # access while session open to load
+            return portfolio
 
     def list_portfolios(self, username: str) -> List[Portfolio]:
-        return list(self.db.portfolios.get(username, []))
+        with get_session() as session:
+            # Eager-load investments for each portfolio to avoid detached-instance
+            # lazy-load errors in callers that inspect holdings.
+            return session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username).all()
 
     def get_portfolio(self, username: str, portfolio_id: int) -> Optional[Portfolio]:
-        for p in self.db.portfolios.get(username, []):
-            if p.id == portfolio_id:
-                return p
-        return None
+        with get_session() as session:
+            return session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username, id=portfolio_id).first()
 
     def delete_portfolio(self, username: str, portfolio_id: int) -> None:
-        user_ports = self.db.portfolios.get(username, [])
-        for idx, p in enumerate(user_ports):
-            if p.id == portfolio_id:
-                if p.holdings:
-                    raise ValidationError("Portfolio holdings must be empty before deletion.")
-                user_ports.pop(idx)
-                return
-        raise NotFoundError(f"portfolio id {portfolio_id} not found for user {username}")
+        with get_session() as session:
+            portfolio = session.query(Portfolio).filter_by(owner_username=username, id=portfolio_id).first()
+            if not portfolio:
+                raise NotFoundError(f"portfolio id {portfolio_id} not found for user {username}")
+            if portfolio.investments and len(portfolio.investments) > 0:
+                raise ValidationError("Portfolio holdings must be empty before deletion.")
+            session.delete(portfolio)
+            session.commit()
 
     def add_investment(self, username: str, portfolio_id: int, ticker: str, quantity: int, purchase_price: float) -> Investment:
         if quantity <= 0:
             raise ValidationError("quantity must be positive")
-        portfolio = self.get_portfolio(username, portfolio_id)
-        if portfolio is None:
-            raise NotFoundError("portfolio not found")
-        # check if security exists
-        if ticker not in self.db.securities:
-            raise NotFoundError(f"ticker '{ticker}' not found")
-        security = self.db.securities[ticker]
-        cost = security.price * quantity
-        user = self.db.users.get(username)
-        if user is None or user.balance < cost:
-            raise ValidationError("insufficient balance")
-        # deduct balance
-        user.balance -= cost
-        # find existing holding
-        for h in portfolio.holdings:
-            if h.ticker == ticker:
-                h.quantity += quantity
-                # update purchase_price to average or keep as is; for simplicity, keep provided
-                h.purchase_price = purchase_price
-                return h
-        holding = Investment(ticker=ticker, quantity=quantity, purchase_price=purchase_price)
-        portfolio.holdings.append(holding)
-        return holding
+        with get_session() as session:
+            portfolio = session.query(Portfolio).filter_by(owner_username=username, id=portfolio_id).first()
+            if not portfolio:
+                raise NotFoundError("portfolio not found")
+            security = session.query(Security).filter_by(ticker=ticker).first()
+            if not security:
+                raise NotFoundError(f"ticker '{ticker}' not found")
+            user = session.query(User).filter_by(username=username).first()
+            cost = security.price * quantity
+            if user is None or user.balance < cost:
+                raise ValidationError("insufficient balance")
+            user.balance -= cost
+            # find existing holding
+            existing = session.query(Investment).filter_by(portfolio_id=portfolio_id, security_ticker=ticker).first()
+            if existing:
+                existing.quantity += quantity
+                existing.purchase_price = purchase_price
+                session.commit()
+                return existing
+            holding = Investment(portfolio_id=portfolio_id, security_ticker=ticker, quantity=quantity, purchase_price=purchase_price)
+            session.add(holding)
+            session.commit()
+            return holding
 
     def harvest_investment(self, username: str, portfolio_id: int, ticker: str, quantity: int, sale_price: float) -> float:
         if quantity <= 0:
             raise ValidationError("quantity must be positive")
-        portfolio = self.get_portfolio(username, portfolio_id)
-        if portfolio is None:
-            raise NotFoundError("portfolio not found")
-        for idx, h in enumerate(portfolio.holdings):
-            if h.ticker == ticker:
-                held_qty = h.quantity
-                if quantity > held_qty:
-                    raise ValidationError("requested quantity exceeds holdings")
-                proceeds = quantity * sale_price
-                # update user balance
-                user = self.db.users.get(username)
-                if user is None:
-                    raise NotFoundError("user not found")
-                user.balance += proceeds
-                # update holdings
-                if quantity == held_qty:
-                    portfolio.holdings.pop(idx)
-                else:
-                    h.quantity = held_qty - quantity
-                return proceeds
-        raise NotFoundError("investment ticker not found in portfolio")
+        with get_session() as session:
+            portfolio = session.query(Portfolio).filter_by(owner_username=username, id=portfolio_id).first()
+            if not portfolio:
+                raise NotFoundError("portfolio not found")
+            investment = session.query(Investment).filter_by(portfolio_id=portfolio_id, security_ticker=ticker).first()
+            if not investment:
+                raise NotFoundError(f"investment in '{ticker}' not found")
+            held_qty = investment.quantity
+            if quantity > held_qty:
+                raise ValidationError("not enough shares to harvest")
+            user = session.query(User).filter_by(username=username).first()
+            proceeds = sale_price * quantity
+            investment.quantity -= quantity
+            if investment.quantity == 0:
+                session.delete(investment)
+            user.balance += proceeds
+            session.commit()
+            return proceeds
 
     def get_portfolios_by_username(self, username: str) -> List[Portfolio]:
         """
-        Retrieve all portfolios for a given username.
+        Retrieve all portfolios for a given username from the database.
         Raises NotFoundError if the user does not exist.
         """
-        if username not in self.db.users:
-            raise NotFoundError(f"User '{username}' not found.")
-        return self.db.portfolios.get(username, [])
+        with get_session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                raise NotFoundError(f"User '{username}' not found.")
+            portfolios = session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username).all()
+            return portfolios

@@ -1,2 +1,6 @@
 rich>=13.0.0
-
+sqlalchemy
+pymysql
+cryptography
+pytest 
+pytest-cov
