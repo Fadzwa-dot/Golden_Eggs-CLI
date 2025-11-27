@@ -1,49 +1,11 @@
-# Package initializer for app.service
+"""Domain package exports for `app.domain`.
 
-# Defensive re-exports so `from app.service import LoginService` works without failing import-time
-try:
-    from .login_service import LoginService  # type: ignore
-except Exception:
-    LoginService = None  # type: ignore
+Expose the domain dataclasses so tests and other modules can import
+`from app.domain import User, Security, Investment, Portfolio`.
+"""
+from .user import User
+from .security import Security
+from .investment import Investment
+from .portfolio import Portfolio
 
-try:
-    from .exceptions import (
-        AuthenticationError,
-        AuthorizationError,
-        NotFoundError,
-        ValidationError,
-    )  # type: ignore
-except Exception:
-    AuthenticationError = AuthorizationError = NotFoundError = ValidationError = Exception  # type: ignore
-
-try:
-    from .user import User  # type: ignore
-except Exception:
-    User = None  # type: ignore
-
-try:
-    from .security import Security  # type: ignore
-except Exception:
-    Security = None  # type: ignore
-
-try:
-    from .investment import Investment  # type: ignore
-except Exception:
-    Investment = None  # type: ignore
-
-try:
-    from .portfolio import Portfolio  # type: ignore
-except Exception:
-    Portfolio = None  # type: ignore
-
-__all__ = [
-    "LoginService",
-    "AuthenticationError",
-    "AuthorizationError",
-    "NotFoundError",
-    "ValidationError",
-    "User",
-    "Security",
-    "Investment",
-    "Portfolio",
-]
+__all__ = ["User", "Security", "Investment", "Portfolio"]

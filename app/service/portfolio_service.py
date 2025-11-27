@@ -1,6 +1,7 @@
-# app/service/portfolio_service.py
+4# app/service/portfolio_service.py
 from typing import Dict, List, Optional, Any
 from app.db import get_session
+from sqlalchemy.orm import selectinload
 from app.models.portfolio import Portfolio
 from app.models.user import User
 from app.models.investment import Investment
@@ -24,15 +25,21 @@ class PortfolioService:
             portfolio = Portfolio(name=name, description=description, owner_username=username)
             session.add(portfolio)
             session.commit()
+            # Ensure relationships are loaded before the session is closed so
+            # callers can inspect `portfolio.investments` without triggering
+            # a lazy-load on a closed session.
+            _ = portfolio.investments  # access while session open to load
             return portfolio
 
     def list_portfolios(self, username: str) -> List[Portfolio]:
         with get_session() as session:
-            return session.query(Portfolio).filter_by(owner_username=username).all()
+            # Eager-load investments for each portfolio to avoid detached-instance
+            # lazy-load errors in callers that inspect holdings.
+            return session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username).all()
 
     def get_portfolio(self, username: str, portfolio_id: int) -> Optional[Portfolio]:
         with get_session() as session:
-            return session.query(Portfolio).filter_by(owner_username=username, id=portfolio_id).first()
+            return session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username, id=portfolio_id).first()
 
     def delete_portfolio(self, username: str, portfolio_id: int) -> None:
         with get_session() as session:
@@ -102,5 +109,5 @@ class PortfolioService:
             user = session.query(User).filter_by(username=username).first()
             if not user:
                 raise NotFoundError(f"User '{username}' not found.")
-            portfolios = session.query(Portfolio).filter_by(owner_username=username).all()
+            portfolios = session.query(Portfolio).options(selectinload(Portfolio.investments)).filter_by(owner_username=username).all()
             return portfolios

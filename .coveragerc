@@ -1,0 +1,7 @@
+[run]
+omit =
+    app/cli/*
+    main.py
+    add_admin_user.py
+    db.py
+    __main__.py
