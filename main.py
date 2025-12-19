@@ -1,20 +1,12 @@
-# main.py
-from rich.console import Console
-from app.cli.menu_printer import MenuPrinter
-from app.service.login_service import LoginService
-from app.service.user_service import UserService
-from app.service.portfolio_service import PortfolioService
-from app.service.security_service import SecurityService
-from db import seed_initial_data
+"""Switch main entrypoint to start the Flask web service.
 
-console = Console()
+To run the CLI, use its module directly (e.g., `py -m app.cli.menu_printer`),
+but for Assignment 3 the main entrypoint starts the web server.
+"""
+from app import create_app
+from app.config import Config
 
-def main() -> None:
-    # seed already called in db import, but safe to call again if needed
-    seed_initial_data()
-    login_service = LoginService()
-    menu = MenuPrinter(login_service, UserService(), PortfolioService(), SecurityService())
-    menu.run()
+app = create_app(Config)
 
 if __name__ == "__main__":
-    main()
+    app.run(host="127.0.0.1", port=5000, debug=Config.DEBUG)
